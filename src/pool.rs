@@ -1,7 +1,5 @@
 //! A small module that's intended to provide an example of creating a pool of
 //! web workers which can be used to execute `rayon`-style work.
-use std::borrow::Borrow;
-#[cfg_attr(not(feature = "std_atomics"), feature(link_llvm_intrinsics))]
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -93,8 +91,7 @@ impl WorkerPool {
     /// Never attempt to spawn more than one thread at a time!
     ///
     fn worker(&self) -> Result<usize, String> {
-        let state: PoolState = *self.state.borrow();
-        let workers: &Vec<Worker> = (state.workers.borrow()).as_ref();
+        let workers = self.state.workers.borrow();
         for (id, worker) in workers.iter().enumerate() {
             if worker.available == 1 {
                 return Ok(id);
@@ -118,10 +115,15 @@ impl WorkerPool {
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
     fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
-        let worker = self.state.workers.borrow_mut()[self.worker()?];
-        assert_eq!(worker.available, 1);
+        let worker = self.worker()?;
+        let mut workers = self.state.workers.borrow_mut();
+        assert_eq!(workers[worker].available, 1);
         let work = Work { func: Box::new(f) };
-        worker.work_item = Some(work);
+        workers[worker].available = 0;
+        workers[worker].work_item = Some(work);
+        unsafe {
+            atomics::atomic_notify(workers[worker].available as *mut i32, 1);
+        }
         Ok(())
     }
 }
@@ -179,7 +181,8 @@ pub unsafe fn child_entry_point(ptr: u32) {
     let mut worker = ptr as *mut Worker;
 
     loop {
-        if let Some(work) = (*worker).work_item {
+        if (*worker).work_item.is_some() {
+            let work = Box::from_raw((*worker).work_item.as_mut().unwrap());
             (work.func)();
         }
         (*worker).available = 1;
