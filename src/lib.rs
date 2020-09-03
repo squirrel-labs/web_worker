@@ -1,6 +1,10 @@
 #![feature(link_llvm_intrinsics)]
+#![feature(stdsimd)]
 //! Utilities to work with web workers and rayon.
 use rayon::ThreadPool;
+
+#[macro_use]
+extern crate log;
 
 mod pool;
 

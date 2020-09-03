@@ -177,7 +177,9 @@ mod atomics {
 
 /// Entry point invoked by `worker.js`
 /// The worker.available has to be set prior to its invokation
-pub extern fn child_entry_point(ptr: u32) {
+/// # Safety
+/// this function should be safe, as long as it is called with valid arguments
+pub unsafe extern "C" fn child_entry_point(ptr: u32) {
     let mut worker = ptr as *mut Worker;
 
     loop {
