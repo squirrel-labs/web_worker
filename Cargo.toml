@@ -17,3 +17,6 @@ futures = "0.1"
 rayon = "1.1.0"
 rayon-core = "1.5.0"
 log = '*'
+
+[features]
+std_atomics = []

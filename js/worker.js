@@ -1,25 +1,27 @@
-// synchronously, using the browser, import out shim JS scripts
-importScripts('pkg/web_worker.js');
+'use strict';
 
-// Wait for the main thread to send us the shared module/memory. Once we've got
-// it, initialize it all with the `wasm_bindgen` global we imported via
-// `importScripts`.
-//
-// After our first message all subsequent messages are an entry point to run,
-// so we just do that.
-self.onmessage = event => {
-  let initialised = wasm_bindgen(...event.data).catch(err => {
-    // Propagate to main `onerror`:
-    setTimeout(() => {
-      throw err;
-    });
-    // Rethrow to keep promise rejected and prevent execution of further commands:
-    throw err;
-  });
+/* This section belongs in your existing source files
+let cached_wasm;
 
-  self.onmessage = async event => {
-    // This will queue further commands up until the module is fully initialised:
-    await initialised;
-    wasm_bindgen.child_entry_point(event.data);
-  };
-};
+function spawn_worker(id, stack_top) {
+    worker = new Webworker('js/worker.js');
+
+    worker.postMessage([cached_wasm, id, stack_top]);
+
+}*/
+
+onmessage = async function({ data }) {
+    data = data[0]
+    id = data[1]
+    stack_top = data[2]
+    wasm = await WebAssembly.instantiate(data.compiled, {env: {
+        memory: mem
+    }});
+
+    wasm.exports.__sp.value = stack_top;
+    wasm.exports.__wasm_init_memory();
+    wasm.exports.__wasm_init_tls();
+    wasm.exports.init(wasm.exports.__heap_base.value);
+    wasm.exports.child_entry_point();
+}
+
