@@ -3,11 +3,14 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+const STACK_ALIGN: usize = 1024 * 64;
+
 /// The `WorkerPool`. This is a special type of thread pool that works on wasm and provide a way to
 /// run work they way rayon does it.
 pub struct WorkerPool {
     state: Rc<PoolState>,
     stack_size: u32,
+    tls_size: u32,
 }
 
 struct PoolState {
@@ -24,7 +27,7 @@ struct Work {
 }
 
 extern "C" {
-    fn spawn_worker(id: u32, stack_top: u32);
+    fn spawn_pool_worker(id: u32, stack_top: u32, ptr: u32, tls: u32);
 }
 
 impl WorkerPool {
@@ -38,12 +41,13 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
-    pub fn new(initial: usize, stack_size: u32) -> Result<WorkerPool, String> {
+    pub fn new(initial: usize, stack_size: u32, tls_size: u32) -> Result<WorkerPool, String> {
         let pool = WorkerPool {
             state: Rc::new(PoolState {
                 workers: RefCell::new(Vec::with_capacity(initial)),
             }),
             stack_size,
+            tls_size,
         };
         for _ in 0..initial {
             let worker = pool.spawn()?;
@@ -65,19 +69,30 @@ impl WorkerPool {
     fn spawn(&self) -> Result<Worker, String> {
         log::debug!("spawning new worker");
 
+        let worker = Worker {
+            available: 1,
+            work_item: None,
+        };
+
         unsafe {
-            let layout =
-                core::alloc::Layout::from_size_align_unchecked(self.stack_size as usize, 16);
-            let stack_top = std::alloc::alloc(layout);
-            spawn_worker(self.state.workers.borrow().len() as u32, stack_top as u32);
+            let stack_layout =
+                core::alloc::Layout::from_size_align(self.stack_size as usize, STACK_ALIGN)
+                    .unwrap();
+            let stack_top = std::alloc::alloc(stack_layout);
+            let tls_layout =
+                core::alloc::Layout::from_size_align(self.tls_size as usize, 8).unwrap();
+            let tls = std::alloc::alloc(tls_layout);
+            spawn_pool_worker(
+                self.state.workers.borrow().len() as u32,
+                stack_top as u32,
+                &worker as *const Worker as u32,
+                tls as u32,
+            );
         }
         // With a worker spun up send it the module/memory so it can start
         // instantiating the wasm module. Later it might receive further
         // messages about code to run on the wasm module.
-        Ok(Worker {
-            available: 1,
-            work_item: None,
-        })
+        Ok(worker)
     }
 
     /// Fetches a worker from this pool, spawning one if necessary.
@@ -115,15 +130,19 @@ impl WorkerPool {
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
     fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
+        log::debug!("execute f");
         let worker = self.worker()?;
         let mut workers = self.state.workers.borrow_mut();
         assert_eq!(workers[worker].available, 1);
+        log::debug!("got worker");
         let work = Work { func: Box::new(f) };
         workers[worker].available = 0;
         workers[worker].work_item = Some(work);
+        log::debug!("init worker");
         unsafe {
-            atomics::atomic_notify(workers[worker].available as *mut i32, 1);
+            atomics::memory_atomic_notify(workers[worker].available as *mut i32, 1);
         }
+        log::debug!("notified worker");
         Ok(())
     }
 }
@@ -150,7 +169,7 @@ impl WorkerPool {
 
 mod atomics {
     #[cfg(feature = "std_atomics")]
-    pub use core::arch::wasm32::{atomic_notify, i32_atomic_wait};
+    pub use core::arch::wasm32::{memory_atomic_notify, memory_atomic_wait32};
 
     #[cfg(not(feature = "std_atomics"))]
     pub use llvm_intrinsic::*;
@@ -165,11 +184,11 @@ mod atomics {
         }
 
         #[inline]
-        pub unsafe fn i32_atomic_wait(ptr: *mut i32, expression: i32, timeout_ns: i64) -> i32 {
+        pub unsafe fn memory_atomic_wait32(ptr: *mut i32, expression: i32, timeout_ns: i64) -> i32 {
             llvm_atomic_wait_i32(ptr, expression, timeout_ns)
         }
         #[inline]
-        pub unsafe fn atomic_notify(ptr: *mut i32, waiters: u32) -> u32 {
+        pub unsafe fn memory_atomic_notify(ptr: *mut i32, waiters: u32) -> u32 {
             llvm_atomic_notify(ptr, waiters as i32) as u32
         }
     }
@@ -179,15 +198,21 @@ mod atomics {
 /// The worker.available has to be set prior to its invokation
 /// # Safety
 /// this function should be safe, as long as it is called with valid arguments
-pub unsafe extern "C" fn child_entry_point(ptr: u32) {
+pub unsafe fn child_entry_point(ptr: u32) {
+    log::debug!("entry reached");
     let mut worker = ptr as *mut Worker;
 
     loop {
         if (*worker).work_item.is_some() {
+            log::debug!("got work");
             let work = Box::from_raw((*worker).work_item.as_mut().unwrap());
+            log::debug!("got boxed work");
             (work.func)();
+            log::debug!("finished work");
+            (*worker).work_item = None;
+            log::debug!("reset work");
         }
         (*worker).available = 1;
-        atomics::i32_atomic_wait(&mut (*worker).available as *mut i32, 1, -1);
+        atomics::memory_atomic_wait32(&mut (*worker).available as *mut i32, 1, -1);
     }
 }

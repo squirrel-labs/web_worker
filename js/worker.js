@@ -2,18 +2,20 @@
 
 /* This section belongs in your existing source files
 let cached_wasm;
+let mem;
 
 function spawn_worker(id, stack_top) {
-    worker = new Webworker('js/worker.js');
+    worker = new Worker('js/worker.js');
 
-    worker.postMessage([cached_wasm, id, stack_top]);
+    worker.postMessage([cached_wasm, mem, id, stack_top]);
 
 }*/
 
 onmessage = async function({ data }) {
     data = data[0]
-    id = data[1]
-    stack_top = data[2]
+    mem = data[1]
+    id = data[2]
+    stack_top = data[3]
     wasm = await WebAssembly.instantiate(data.compiled, {env: {
         memory: mem
     }});
