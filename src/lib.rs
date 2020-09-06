@@ -15,10 +15,10 @@ pub fn default_thread_pool(
     concurrency: usize,
     stack_size: u32,
     tls_size: u32,
-) -> Option<ThreadPool> {
+) -> Option<(ThreadPool, pool::WorkerPool)> {
     let worker_pool = pool::WorkerPool::new(concurrency, stack_size, tls_size);
     match worker_pool {
-        Ok(pool) => Some(new_thread_pool(concurrency, &pool)),
+        Ok(pool) => Some((new_thread_pool(concurrency, &pool), pool)),
         Err(e) => {
             log::error!("Failed to create WorkerPool: {:?}", e);
             None
@@ -31,10 +31,13 @@ pub fn set_global_thread_pool(
     concurrency: usize,
     stack_size: u32,
     tls_size: u32,
-) -> Result<(), String> {
+) -> Result<pool::WorkerPool, String> {
     let worker_pool = pool::WorkerPool::new(concurrency, stack_size, tls_size);
     match worker_pool {
-        Ok(pool) => create_global_threadpool(concurrency, &pool).map_err(|e| format!("{}", e)),
+        Ok(pool) => {
+            create_global_threadpool(concurrency, &pool).map_err(|e| format!("{}", e));
+            Ok(pool)
+        }
         Err(e) => {
             log::error!("Failed to create WorkerPool: {:?}", e);
             Err(e)

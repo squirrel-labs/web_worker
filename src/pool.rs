@@ -19,7 +19,8 @@ struct PoolState {
 
 struct Worker {
     available: i32,
-    work_item: Option<Work>,
+    id: u32,
+    work_item: u32,
 }
 
 struct Work {
@@ -42,7 +43,7 @@ impl WorkerPool {
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
     pub fn new(initial: usize, stack_size: u32, tls_size: u32) -> Result<WorkerPool, String> {
-        let pool = WorkerPool {
+        let mut pool = WorkerPool {
             state: Rc::new(PoolState {
                 workers: RefCell::new(Vec::with_capacity(initial)),
             }),
@@ -50,8 +51,7 @@ impl WorkerPool {
             tls_size,
         };
         for _ in 0..initial {
-            let worker = pool.spawn()?;
-            pool.state.workers.borrow_mut().push(worker);
+            pool.spawn()?;
         }
 
         Ok(pool)
@@ -66,33 +66,38 @@ impl WorkerPool {
     ///
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
-    fn spawn(&self) -> Result<Worker, String> {
+    fn spawn(&self) -> Result<(), String> {
         log::debug!("spawning new worker");
 
         let worker = Worker {
             available: 1,
-            work_item: None,
+            id: self.state.workers.borrow().len() as u32,
+            work_item: 0,
         };
+
+        let wid = worker.id;
+        self.state.workers.borrow_mut().push(worker);
+        let worker = &mut self.state.workers.borrow_mut()[wid as usize];
 
         unsafe {
             let stack_layout =
                 core::alloc::Layout::from_size_align(self.stack_size as usize, STACK_ALIGN)
                     .unwrap();
-            let stack_top = std::alloc::alloc(stack_layout);
+            let stack_top = std::alloc::alloc(stack_layout).offset(self.stack_size as isize);
             let tls_layout =
                 core::alloc::Layout::from_size_align(self.tls_size as usize, 8).unwrap();
             let tls = std::alloc::alloc(tls_layout);
             spawn_pool_worker(
-                self.state.workers.borrow().len() as u32,
+                worker.id,
                 stack_top as u32,
-                &worker as *const Worker as u32,
+                worker as *const Worker as u32,
                 tls as u32,
             );
         }
         // With a worker spun up send it the module/memory so it can start
         // instantiating the wasm module. Later it might receive further
         // messages about code to run on the wasm module.
-        Ok(worker)
+        Ok(())
     }
 
     /// Fetches a worker from this pool, spawning one if necessary.
@@ -113,7 +118,7 @@ impl WorkerPool {
             }
         }
 
-        self.state.workers.borrow_mut().push(self.spawn()?);
+        self.spawn()?;
         Ok(self.state.workers.borrow().len() - 1)
     }
 
@@ -135,9 +140,11 @@ impl WorkerPool {
         let mut workers = self.state.workers.borrow_mut();
         assert_eq!(workers[worker].available, 1);
         log::debug!("got worker");
-        let work = Work { func: Box::new(f) };
+        let work = Box::new(Work { func: Box::new(f) });
+        let ptr = Box::into_raw(work);
+        log::debug!("assigned work: {}", ptr as u32);
         workers[worker].available = 0;
-        workers[worker].work_item = Some(work);
+        workers[worker].work_item = ptr as u32;
         log::debug!("init worker");
         unsafe {
             atomics::memory_atomic_notify(workers[worker].available as *mut i32, 1);
@@ -200,16 +207,23 @@ mod atomics {
 /// this function should be safe, as long as it is called with valid arguments
 pub unsafe fn child_entry_point(ptr: u32) {
     log::debug!("entry reached");
+    log::debug!("worker ptr: {}", ptr);
     let mut worker = ptr as *mut Worker;
+    log::debug!("worker id: {}", (*worker).id);
+    log::debug!("worker item: {}", (*worker).work_item);
 
     loop {
-        if (*worker).work_item.is_some() {
+        if (*worker).work_item != 0 {
             log::debug!("got work");
-            let work = Box::from_raw((*worker).work_item.as_mut().unwrap());
+            let work = Box::from_raw((*worker).work_item as *mut Work);
+            log::debug!(
+                "work_item ptr: {}",
+                work.func.as_ref() as *const dyn std::ops::FnOnce() as *const u8 as u32
+            );
             log::debug!("got boxed work");
             (work.func)();
             log::debug!("finished work");
-            (*worker).work_item = None;
+            (*worker).work_item = 0;
             log::debug!("reset work");
         }
         (*worker).available = 1;
