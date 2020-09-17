@@ -3,7 +3,6 @@
 //! Utilities to work with web workers and rayon.
 use rayon::ThreadPool;
 
-#[macro_use]
 extern crate log;
 
 mod pool;
@@ -35,7 +34,7 @@ pub fn set_global_thread_pool(
     let worker_pool = pool::WorkerPool::new(concurrency, stack_size, tls_size);
     match worker_pool {
         Ok(pool) => {
-            create_global_threadpool(concurrency, &pool).map_err(|e| format!("{}", e));
+            let _ = create_global_threadpool(concurrency, &pool).map_err(|e| log::error!("{}", e));
             Ok(pool)
         }
         Err(e) => {

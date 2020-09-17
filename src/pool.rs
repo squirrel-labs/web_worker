@@ -43,7 +43,7 @@ impl WorkerPool {
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
     pub fn new(initial: usize, stack_size: u32, tls_size: u32) -> Result<WorkerPool, String> {
-        let mut pool = WorkerPool {
+        let pool = WorkerPool {
             state: Rc::new(PoolState {
                 workers: RefCell::new(Vec::with_capacity(initial)),
             }),
@@ -67,7 +67,7 @@ impl WorkerPool {
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
     fn spawn(&self) -> Result<(), String> {
-        log::debug!("spawning new worker");
+        log::trace!("spawning new worker");
 
         let worker = Worker {
             available: 1,
@@ -135,21 +135,16 @@ impl WorkerPool {
     /// Returns any error that may happen while a JS web worker is created and a
     /// message is sent to it.
     fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
-        log::debug!("execute f");
         let worker = self.worker()?;
         let mut workers = self.state.workers.borrow_mut();
         assert_eq!(workers[worker].available, 1);
-        log::debug!("got worker");
         let work = Box::new(Work { func: Box::new(f) });
         let ptr = Box::into_raw(work);
-        log::debug!("assigned work: {}", ptr as u32);
         workers[worker].available = 0;
         workers[worker].work_item = ptr as u32;
-        log::debug!("init worker");
         unsafe {
             atomics::memory_atomic_notify(workers[worker].available as *mut i32, 1);
         }
-        log::debug!("notified worker");
         Ok(())
     }
 }
@@ -206,25 +201,15 @@ mod atomics {
 /// # Safety
 /// this function should be safe, as long as it is called with valid arguments
 pub unsafe fn child_entry_point(ptr: u32) {
-    log::debug!("entry reached");
-    log::debug!("worker ptr: {}", ptr);
+    log::trace!("worker entry reached");
     let mut worker = ptr as *mut Worker;
-    log::debug!("worker id: {}", (*worker).id);
-    log::debug!("worker item: {}", (*worker).work_item);
 
     loop {
         if (*worker).work_item != 0 {
-            log::debug!("got work");
             let work = Box::from_raw((*worker).work_item as *mut Work);
-            log::debug!(
-                "work_item ptr: {}",
-                work.func.as_ref() as *const dyn std::ops::FnOnce() as *const u8 as u32
-            );
-            log::debug!("got boxed work");
+            log::trace!("executing work item");
             (work.func)();
-            log::debug!("finished work");
             (*worker).work_item = 0;
-            log::debug!("reset work");
         }
         (*worker).available = 1;
         atomics::memory_atomic_wait32(&mut (*worker).available as *mut i32, 1, -1);
