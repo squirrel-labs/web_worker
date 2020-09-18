@@ -170,13 +170,23 @@ impl WorkerPool {
 }
 
 mod atomics {
-    #[cfg(feature = "std_atomics")]
+    #[cfg(all(feature = "std_atomics", target_arch = "wasm32"))]
     pub use core::arch::wasm32::{memory_atomic_notify, memory_atomic_wait32};
 
-    #[cfg(not(feature = "std_atomics"))]
+    #[cfg(all(not(feature = "std_atomics"), target_arch = "wasm32"))]
     pub use llvm_intrinsic::*;
 
-    #[cfg(not(feature = "std_atomics"))]
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unsafe fn memory_atomic_wait32(ptr: *mut i32, expression: i32, timeout_ns: i64) -> i32 {
+        0
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub unsafe fn memory_atomic_notify(ptr: *mut i32, waiters: u32) -> u32 {
+        0
+    }
+
+    #[cfg(all(not(feature = "std_atomics"), target_arch = "wasm32"))]
     mod llvm_intrinsic {
         extern "C" {
             #[link_name = "llvm.wasm.atomic.wait.i32"]
