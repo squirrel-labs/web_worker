@@ -1,6 +1,6 @@
 [package]
 name = "nobg-web_worker"
-version = "0.3.2"
+version = "0.3.3"
 authors = ["Dennis Kobert <dennis@kobert.dev>"]
 edition = "2018"
 repository = "https://github.com/squirrel-labs/web_worker"
@@ -16,7 +16,8 @@ license = "MPL-2.0"
 futures = "0.1"
 rayon = "1.1.0"
 rayon-core = "1.5.0"
-log = '*'
+log = "*"
+spin = "0.5"
 
 [features]
 std_atomics = []

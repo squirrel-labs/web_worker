@@ -1,20 +1,20 @@
 //! A small module that's intended to provide an example of creating a pool of
 //! web workers which can be used to execute `rayon`-style work.
-use std::cell::RefCell;
-use std::rc::Rc;
+use spin::Mutex;
+use std::sync::Arc;
 
 const STACK_ALIGN: usize = 1024 * 64;
 
 /// The `WorkerPool`. This is a special type of thread pool that works on wasm and provide a way to
 /// run work they way rayon does it.
 pub struct WorkerPool {
-    state: Rc<PoolState>,
+    state: Arc<PoolState>,
     stack_size: u32,
     tls_size: u32,
 }
 
 struct PoolState {
-    workers: RefCell<Vec<Worker>>,
+    workers: Mutex<Vec<Worker>>,
 }
 
 struct Worker {
@@ -44,8 +44,8 @@ impl WorkerPool {
     /// message is sent to it.
     pub fn new(initial: usize, stack_size: u32, tls_size: u32) -> Result<WorkerPool, String> {
         let pool = WorkerPool {
-            state: Rc::new(PoolState {
-                workers: RefCell::new(Vec::with_capacity(initial)),
+            state: Arc::new(PoolState {
+                workers: Mutex::new(Vec::with_capacity(initial)),
             }),
             stack_size,
             tls_size,
@@ -71,13 +71,14 @@ impl WorkerPool {
 
         let worker = Worker {
             available: 1,
-            id: self.state.workers.borrow().len() as u32,
+            id: self.state.workers.lock().len() as u32,
             work_item: 0,
         };
 
         let wid = worker.id;
-        self.state.workers.borrow_mut().push(worker);
-        let worker = &mut self.state.workers.borrow_mut()[wid as usize];
+        let mut workers = self.state.workers.lock();
+        workers.push(worker);
+        let worker = &mut workers[wid as usize];
 
         unsafe {
             let stack_layout =
@@ -111,7 +112,7 @@ impl WorkerPool {
     /// Never attempt to spawn more than one thread at a time!
     ///
     fn worker(&self) -> Result<usize, String> {
-        let workers = self.state.workers.borrow();
+        let workers = self.state.workers.lock();
         for (id, worker) in workers.iter().enumerate() {
             if worker.available == 1 {
                 return Ok(id);
@@ -119,7 +120,7 @@ impl WorkerPool {
         }
 
         self.spawn()?;
-        Ok(self.state.workers.borrow().len() - 1)
+        Ok(workers.len() - 1)
     }
 
     /// Executes the work `f` in a web worker, spawning a web worker if
@@ -136,7 +137,7 @@ impl WorkerPool {
     /// message is sent to it.
     fn execute(&self, f: impl FnOnce() + Send + 'static) -> Result<(), String> {
         let worker = self.worker()?;
-        let mut workers = self.state.workers.borrow_mut();
+        let mut workers = self.state.workers.lock();
         assert_eq!(workers[worker].available, 1);
         let work = Box::new(Work { func: Box::new(f) });
         let ptr = Box::into_raw(work);
